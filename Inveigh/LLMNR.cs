@@ -92,7 +92,7 @@ namespace Inveigh
 
                         lock (Program.outputList)
                         {
-                            Program.outputList.Add(String.Format("[+] [{0}] LLMNR request for {1} received from {2} [{3}]", DateTime.Now.ToString("s"), llmnrRequestHost, sourceIPAddress, llmnrResponseMessage));
+                            Program.outputList.Add(String.Format("[+] [{0}] LLMNR request for {1} from {2} [{3}]", DateTime.Now.ToString("s"), llmnrRequestHost, sourceIPAddress, llmnrResponseMessage));
                         }
 
 

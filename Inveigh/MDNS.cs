@@ -102,7 +102,7 @@ namespace Inveigh
 
                         lock (Program.outputList)
                         {
-                            Program.outputList.Add(String.Format("[+] [{0}] mDNS(QU) request for {1}({2}) received from {3} [{4}]", DateTime.Now.ToString("s"), mdnsRequestHostFull, mdnsRecordType, sourceIPAddress, mdnsResponseMessage));
+                            Program.outputList.Add(String.Format("[+] [{0}] mDNS(QU) request for {1}({2}) from {3} [{4}]", DateTime.Now.ToString("s"), mdnsRequestHostFull, mdnsRecordType, sourceIPAddress, mdnsResponseMessage));
                         }
 
 
@@ -162,7 +162,7 @@ namespace Inveigh
 
                         lock (Program.outputList)
                         {
-                            Program.outputList.Add(String.Format("[+] [{0}] mDNS(QM) request for {1}({2}) received from {3} [{4}]", DateTime.Now.ToString("s"), mdnsRequestHostFull, mdnsRecordType, sourceIPAddress, mdnsResponseMessage));
+                            Program.outputList.Add(String.Format("[+] [{0}] mDNS(QM) request for {1}({2}) from {3} [{4}]", DateTime.Now.ToString("s"), mdnsRequestHostFull, mdnsRecordType, sourceIPAddress, mdnsResponseMessage));
                         }
 
                     }

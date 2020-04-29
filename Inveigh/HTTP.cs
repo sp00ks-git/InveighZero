@@ -4,6 +4,7 @@ using System.Text;
 using System.Net;
 using System.Net.Sockets;
 using System.IO;
+using System.Threading;
 
 namespace Inveigh
 {
@@ -15,13 +16,7 @@ namespace Inveigh
         {
             TcpListener httpListener = null;
             TcpClient httpClient = new TcpClient();
-            NetworkStream httpStream = null;
             IAsyncResult httpAsync;
-            bool httpConnectionHeaderClose = false;
-            bool httpClientClose = false;
-            string httpRawURL = "";
-            string httpRawURLOld = "";
-            IntPtr httpClientHandleOld = new IntPtr(0);
             string httpType = "HTTP";
 
             if (!String.Equals(httpIP, "0.0.0.0"))
@@ -57,6 +52,55 @@ namespace Inveigh
 
             while (!Program.exitInveigh)
             {
+                httpAsync = httpListener.BeginAcceptTcpClient(null, null);
+
+                do
+                {
+                    System.Threading.Thread.Sleep(10);
+
+                    if (Program.exitInveigh)
+                    {
+                        break;
+                    }
+
+                }
+                while (!httpAsync.IsCompleted);
+
+                httpClient = httpListener.EndAcceptTcpClient(httpAsync);
+                object[] httpParams = { httpIP, httpPort, httpType, ntlmChallenge, computerName, dnsDomain, netbiosDomain, httpBasicRealm, httpAuth, httpResponse, wpadAuth, wpadResponse, wpadAuthIgnore, proxyIgnore, proxyListener, httpClient };
+                ThreadPool.QueueUserWorkItem(new WaitCallback(GetHTTPClient), httpParams);
+            }
+
+        }
+
+        public static void GetHTTPClient(object Params)
+        {
+            var args = Params;
+            object[] httpParams = Params as object[];
+            string httpIP = Convert.ToString(httpParams[0]);
+            string httpPort = Convert.ToString(httpParams[1]);
+            string httpType = Convert.ToString(httpParams[2]);
+            string ntlmChallenge = Convert.ToString(httpParams[3]);
+            string computerName = Convert.ToString(httpParams[4]);
+            string dnsDomain = Convert.ToString(httpParams[5]);
+            string netbiosDomain = Convert.ToString(httpParams[6]);
+            string httpBasicRealm = Convert.ToString(httpParams[7]);
+            string httpAuth = Convert.ToString(httpParams[8]);
+            string httpResponse = Convert.ToString(httpParams[9]);
+            string wpadAuth = Convert.ToString(httpParams[10]);
+            string wpadResponse = Convert.ToString(httpParams[11]);
+            string[] wpadAuthIgnore = Array.ConvertAll((object[])httpParams[12], Convert.ToString);
+            string[] proxyIgnore = Array.ConvertAll((object[])httpParams[13], Convert.ToString);
+            bool proxyListener = Convert.ToBoolean(httpParams[14]);
+            TcpClient httpClient = (TcpClient)httpParams[15];           
+            string httpRawURL = "";
+            string httpRawURLOld = "";
+            NetworkStream httpStream = null;
+            httpStream = httpClient.GetStream();
+            int httpReset = 0;
+
+            while (httpClient.Connected)
+            {
 
                 try
                 {
@@ -79,28 +123,9 @@ namespace Inveigh
                     string httpHeaderHost = "";
                     string httpHeaderUserAgent = "";
                     byte[] httpRequestData = new byte[4096];
-                    int httpReset = 0;
-
-                    if (!httpClient.Connected)
-                    {
-                        httpClientClose = false;
-                        httpAsync = httpListener.BeginAcceptTcpClient(null, null);
-
-                        do
-                        {
-                            System.Threading.Thread.Sleep(10);
-
-                            if (Program.exitInveigh)
-                            {
-                                break;
-                            }
-
-                        }
-                        while (!httpAsync.IsCompleted);
-
-                        httpClient = httpListener.EndAcceptTcpClient(httpAsync);
-                        httpStream = httpClient.GetStream();
-                    }
+                    bool httpClientClose = false;
+                    bool httpConnectionHeaderClose = false;
+                    httpReset++;
 
                     while (httpStream.DataAvailable)
                     {
@@ -152,42 +177,36 @@ namespace Inveigh
                             httpHeaderUserAgent = Util.HexStringToString(httpHeaderUserAgent);
                         }
 
-                        if (httpClientHandleOld != httpClient.Client.Handle)
+                        lock (Program.outputList)
                         {
-                            httpClientHandleOld = httpClient.Client.Handle;
+                            Program.outputList.Add(String.Format("[+] [{0}] {1}({2}) HTTP {3} request for {4} from {5}:{6}", DateTime.Now.ToString("s"), httpType, httpPort, httpMethod, httpRawURL, httpSourceIP, httpSourcePort));
+                            Program.outputList.Add(String.Format("[+] [{0}] {1}({2}) HTTP host header {3} from {4}:{5}", DateTime.Now.ToString("s"), httpType, httpPort, httpHeaderHost, httpSourceIP, httpSourcePort));
 
-                            lock (Program.outputList)
+                            if (!String.IsNullOrEmpty(httpHeaderUserAgent))
                             {
-                                Program.outputList.Add(String.Format("[+] [{0}] {1}({2}) HTTP {3} request for {4} received from {5}:{6}", DateTime.Now.ToString("s"), httpType, httpPort, httpMethod, httpRawURL, httpSourceIP, httpSourcePort));
-                                Program.outputList.Add(String.Format("[+] [{0}] {1}({2}) HTTP host header {3} received from {4}:{5}", DateTime.Now.ToString("s"), httpType, httpPort, httpHeaderHost, httpSourceIP, httpSourcePort));
+                                Program.outputList.Add(String.Format("[+] [{0}] {1}({2}) HTTP user agent from {3}:{4}:{5}{6}", DateTime.Now.ToString("s"), httpType, httpPort, httpSourceIP, httpSourcePort, System.Environment.NewLine, httpHeaderUserAgent));
+                            }
 
-                                if (!String.IsNullOrEmpty(httpHeaderUserAgent))
+                        }
+
+                        if (Program.enabledProxy && proxyIgnore != null && proxyIgnore.Length > 0)
+                        {
+
+                            foreach (string agent in proxyIgnore)
+                            {
+
+                                if (httpHeaderUserAgent.ToUpper().Contains(agent.ToUpper()))
                                 {
-                                    Program.outputList.Add(String.Format("[+] [{0}] {1}({2}) HTTP user agent received from {3}:{4}:{5}{6}", DateTime.Now.ToString("s"), httpType, httpPort, httpSourceIP, httpSourcePort, System.Environment.NewLine, httpHeaderUserAgent));
+                                    proxyIgnoreMatch = true;
                                 }
 
                             }
 
-                            if (Program.enabledProxy && proxyIgnore != null && proxyIgnore.Length > 0)
+                            if (proxyIgnoreMatch)
                             {
-
-                                foreach (string agent in proxyIgnore)
+                                lock (Program.outputList)
                                 {
-
-                                    if (httpHeaderUserAgent.ToUpper().Contains(agent.ToUpper()))
-                                    {
-                                        proxyIgnoreMatch = true;
-                                    }
-
-                                }
-
-                                if (proxyIgnoreMatch)
-                                {
-                                    lock (Program.outputList)
-                                    {
-                                        Program.outputList.Add(String.Format("[+] [{0}] {1}({2}) ignoring wpad.dat request for proxy due to user agent match from {3}:{4}", DateTime.Now.ToString("s"), httpType, httpPort, httpSourceIP, httpSourcePort));
-
-                                    }
+                                    Program.outputList.Add(String.Format("[+] [{0}] {1}({2}) ignoring wpad.dat request for proxy due to user agent match from {3}:{4}", DateTime.Now.ToString("s"), httpType, httpPort, httpSourceIP, httpSourcePort));
 
                                 }
 
@@ -227,7 +246,7 @@ namespace Inveigh
 
                         }
 
-                        if (!String.Equals(httpRawURL, "/wpad.dat") && String.Equals(httpAuth, "Anonymous") || String.Equals(httpRawURL, "/wpad.dat") && String.Equals(wpadAuth, "Anonymous") || wpadAuthIgnoreMatch)
+                        if (!String.Equals(httpRawURL, "/wpad.dat") && String.Equals(httpAuth, "ANONYMOUS") || String.Equals(httpRawURL, "/wpad.dat") && String.Equals(wpadAuth, "ANONYMOUS") || wpadAuthIgnoreMatch)
                         {
                             httpHeaderStatusCode = new byte[] { 0x32, 0x30, 0x30 };
                             httpResponsePhrase = new byte[] { 0x4f, 0x4b };
@@ -263,7 +282,7 @@ namespace Inveigh
 
                             if ((System.BitConverter.ToString(httpAuthorization.Skip(8).Take(4).ToArray())).Equals("01-00-00-00"))
                             {
-                                authorizationNTLM = GetNTLMChallengeBase64(ntlmESS, ntlmChallenge, httpSourceIP, httpSourcePort, Int32.Parse(httpPort), computerName, netbiosDomain, dnsDomain);
+                                authorizationNTLM = GetNTLMChallengeBase64(ntlmESS, ntlmChallenge, httpSourceIP, httpSourcePort, Int32.Parse(httpPort), computerName, netbiosDomain, dnsDomain, httpType);
                             }
                             else if ((System.BitConverter.ToString(httpAuthorization.Skip(8).Take(4).ToArray())).Equals("03-00-00-00"))
                             {
@@ -426,8 +445,6 @@ namespace Inveigh
 
                         }
 
-
-
                         httpRawURLOld = httpRawURL;
 
                         if (httpClientClose)
@@ -448,19 +465,9 @@ namespace Inveigh
                     else
                     {
 
-                        if (!IntPtr.Equals(httpClientHandleOld, httpClient.Client.Handle))
-                        {
-                            httpReset++;
-                        }
-                        else
-                        {
-                            httpReset = 0;
-                        }
-
-                        if (httpConnectionHeaderClose || httpReset > 20)
+                        if(httpConnectionHeaderClose || httpReset > 20)
                         {
                             httpClient.Close();
-                            httpReset = 0;
                         }
                         else
                         {
@@ -480,7 +487,7 @@ namespace Inveigh
 
         }
 
-        public static string GetNTLMChallengeBase64(bool ntlmESS, string challenge, string ipAddress, string srcPort, int dstPort, string computerName, string netbiosDomain, string dnsDomain)
+        public static string GetNTLMChallengeBase64(bool ntlmESS, string challenge, string ipAddress, string srcPort, int dstPort, string computerName, string netbiosDomain, string dnsDomain, string httpType)
         {
             byte[] httpTimestamp = System.BitConverter.GetBytes(DateTime.Now.ToFileTime());
             byte[] challengeArray = new byte[8];
@@ -515,7 +522,12 @@ namespace Inveigh
                 }
 
             }
-   
+
+            lock (Program.outputList)
+            {
+                Program.outputList.Add(String.Format("[+] [{0}] {1}({2}) NTLM challenge {3} sent to {4}", DateTime.Now.ToString("s"), httpType, dstPort, httpChallenge, session));
+            }
+
             Program.httpSessionTable[session] = httpChallenge;
             byte[] httpNTLMNegotiationFlags = { 0x05, 0x82, 0x81, 0x0A };
 

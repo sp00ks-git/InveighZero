@@ -1,6 +1,11 @@
 ﻿using System;
 using System.Linq;
 using System.Text;
+using System.Net;
+using System.Collections.Generic;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
+using System.IO;
 
 namespace Inveigh
 {
@@ -14,7 +19,7 @@ namespace Inveigh
 
             foreach (string character in stringArray)
             {
-                stringConverted += new System.String(Convert.ToChar(Convert.ToInt16(character, 16)), 1);
+                stringConverted += new String(Convert.ToChar(Convert.ToInt16(character, 16)), 1);
             }
 
             return stringConverted;
@@ -149,6 +154,151 @@ namespace Inveigh
             }
 
             return responseMessage;
+        }
+
+        public static UInt16 GetPacketChecksum(byte[] pseudoHeader, byte[] payload)
+        {
+            int e = 0;
+
+            if((pseudoHeader.Length + payload.Length) % 2 != 0)
+            {
+                e = 1;
+            }
+
+            byte[] packet = new byte[pseudoHeader.Length + payload.Length + e];
+            Buffer.BlockCopy(pseudoHeader, 0, packet, 0, pseudoHeader.Length);
+            Buffer.BlockCopy(payload, 0, packet, pseudoHeader.Length, payload.Length);
+            UInt32 packetChecksum = 0;
+            int length = packet.Length;
+            int index = 0;
+
+            while ( index < length )
+            {
+                packetChecksum += Convert.ToUInt32(BitConverter.ToUInt16(packet, index));
+                index += 2;
+            }
+
+            packetChecksum = (packetChecksum >> 16) + (packetChecksum & 0xffff);
+            packetChecksum += (packetChecksum >> 16);
+
+            return (UInt16)(~packetChecksum);
+        }
+
+        public static Byte[] GetIPv6PseudoHeader(IPAddress sourceIP, IPAddress destinationIP, int nextHeader, int length)
+        {
+            byte[] lengthData = BitConverter.GetBytes(length);
+            Array.Reverse(lengthData);
+            byte[] pseudoHeader = new byte[40];
+            Buffer.BlockCopy(sourceIP.GetAddressBytes(), 0, pseudoHeader, 0, 16);
+            Buffer.BlockCopy(destinationIP.GetAddressBytes(), 0, pseudoHeader, 16, 16);
+            Buffer.BlockCopy(lengthData, 0, pseudoHeader, 32, 4);
+            pseudoHeader[39] = (byte)nextHeader;
+
+            return pseudoHeader;
+        }
+
+        public static string GetLocalIPAddress(string ipVersion)
+        {
+
+            List<string> ipAddressList = new List<string>();
+            AddressFamily addressFamily;
+
+            if (String.Equals(ipVersion, "IPv4"))
+            {
+                addressFamily = AddressFamily.InterNetwork;
+            }
+            else
+            {
+                addressFamily = AddressFamily.InterNetworkV6;
+            }
+
+            foreach (NetworkInterface networkInterface in NetworkInterface.GetAllNetworkInterfaces())
+            {
+
+                if (networkInterface.NetworkInterfaceType == NetworkInterfaceType.Ethernet && networkInterface.OperationalStatus == OperationalStatus.Up)
+                {
+
+                    foreach (UnicastIPAddressInformation ip in networkInterface.GetIPProperties().UnicastAddresses)
+                    {
+
+                        if (ip.Address.AddressFamily == addressFamily)
+                        {
+                            ipAddressList.Add(ip.Address.ToString());
+                        }
+
+                    }
+
+                }
+
+            }
+
+            return ipAddressList.FirstOrDefault();
+        }
+
+        public static string GetLocalMACAddress(string ipAddress)
+        {
+            List<string> macAddressList = new List<string>();
+
+            foreach (NetworkInterface networkInterface in NetworkInterface.GetAllNetworkInterfaces())
+            {
+
+                if (networkInterface.NetworkInterfaceType == NetworkInterfaceType.Ethernet && networkInterface.OperationalStatus == OperationalStatus.Up)
+                {
+
+                    foreach (UnicastIPAddressInformation ip in networkInterface.GetIPProperties().UnicastAddresses)
+                    {
+
+                        if (ip.Address.AddressFamily == AddressFamily.InterNetworkV6 && String.Equals(ip.Address.ToString(), ipAddress))
+                        {
+                            macAddressList.Add(networkInterface.GetPhysicalAddress().ToString());
+                        }
+
+                    }
+
+                }
+
+            }
+
+            return macAddressList.FirstOrDefault();
+        }
+
+        public static byte[] NewDNSNameArray(string name)
+        {
+            var indexList = new List<int>();
+
+            for (int i = name.IndexOf('.'); i > -1; i = name.IndexOf('.', i + 1))
+            {
+                indexList.Add(i);
+            }
+
+            using (MemoryStream ms = new MemoryStream())
+            {
+                string nameSection = "";
+                int nameStart = 0;
+
+                if (indexList.Count > 0)
+                {
+                    int nameEnd = 0;
+
+                    foreach (int index in indexList)
+                    {
+                        nameEnd = index - nameStart;
+                        ms.Write(BitConverter.GetBytes(nameEnd), 0, 1);
+                        nameSection = name.Substring(nameStart, nameEnd);
+                        ms.Write(Encoding.UTF8.GetBytes(nameSection), 0, nameSection.Length);
+                        nameStart = index + 1;
+                    }
+
+                }
+
+                nameSection = name.Substring(nameStart);
+                ms.Write(BitConverter.GetBytes(nameSection.Length), 0, 1);
+                ms.Write(Encoding.UTF8.GetBytes(nameSection), 0, nameSection.Length);
+                ms.Write((new byte[1] { 0x00 }), 0, 1);
+
+                return ms.ToArray();
+            }
+
         }
 
         public static void GetCleartextUnique()

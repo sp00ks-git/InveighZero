@@ -41,9 +41,12 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="DHCPv6.cs" />
     <Compile Include="DNS.cs" />
+    <Compile Include="ICMPv6.cs" />
     <Compile Include="LLMNR.cs" />
     <Compile Include="MDNS.cs" />
+    <Compile Include="SnifferIPv6.cs" />
     <Compile Include="Util.cs" />
     <Compile Include="HTTP.cs" />
     <Compile Include="NBNS.cs" />
